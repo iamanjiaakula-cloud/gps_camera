@@ -183,41 +183,121 @@
     return lines;
   }
 
-  function drawOverlay(ctx, w, h, { address, lat, lon, accuracy, timestamp }) {
+  // Converts lat/lon to fractional slippy-map tile coordinates at a given zoom.
+  function lonLatToTileFloat(lat, lon, zoom) {
+    const n = Math.pow(2, zoom);
+    const x = (lon + 180) / 360 * n;
+    const latRad = lat * Math.PI / 180;
+    const y = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n;
+    return { x, y, n };
+  }
+
+  // Builds a small real-map thumbnail (OpenStreetMap raster tiles) centered on
+  // lat/lon with a pin marker, as an offscreen canvas ready to be drawn onto
+  // the photo. OSM's tile servers send Access-Control-Allow-Origin: *, so the
+  // tiles load without tainting the canvas and the final image can still be
+  // exported/downloaded normally.
+  async function buildMapThumbnail(lat, lon, size, zoom = 16) {
+    const { x: xtileF, y: ytileF, n } = lonLatToTileFloat(lat, lon, zoom);
+    const centerPxX = xtileF * 256;
+    const centerPxY = ytileF * 256;
+    const minPxX = centerPxX - size / 2;
+    const minPxY = centerPxY - size / 2;
+    const minTileX = Math.floor(minPxX / 256);
+    const maxTileX = Math.floor((centerPxX + size / 2) / 256);
+    const minTileY = Math.floor(minPxY / 256);
+    const maxTileY = Math.floor((centerPxY + size / 2) / 256);
+
+    const gridCanvas = document.createElement('canvas');
+    gridCanvas.width = (maxTileX - minTileX + 1) * 256;
+    gridCanvas.height = (maxTileY - minTileY + 1) * 256;
+    const gctx = gridCanvas.getContext('2d');
+
+    const loads = [];
+    for (let tx = minTileX; tx <= maxTileX; tx++) {
+      for (let ty = minTileY; ty <= maxTileY; ty++) {
+        const wrappedX = ((tx % n) + n) % n;
+        const url = `https://tile.openstreetmap.org/${zoom}/${wrappedX}/${ty}.png`;
+        loads.push(new Promise((resolve) => {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = () => { gctx.drawImage(img, (tx - minTileX) * 256, (ty - minTileY) * 256); resolve(); };
+          img.onerror = () => resolve(); // leave that tile blank rather than fail the whole thumbnail
+          img.src = url;
+        }));
+      }
+    }
+    await Promise.all(loads);
+
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = size;
+    outCanvas.height = size;
+    const octx = outCanvas.getContext('2d');
+    octx.drawImage(
+      gridCanvas,
+      minPxX - minTileX * 256, minPxY - minTileY * 256, size, size,
+      0, 0, size, size
+    );
+
+    // pin marker at the exact captured location (center of thumbnail)
+    const cx = size / 2, cy = size / 2;
+    octx.fillStyle = '#ff4757';
+    octx.beginPath(); octx.arc(cx, cy - size * 0.06, size * 0.07, 0, Math.PI * 2); octx.fill();
+    octx.beginPath();
+    octx.moveTo(cx - size * 0.06, cy - size * 0.01);
+    octx.lineTo(cx + size * 0.06, cy - size * 0.01);
+    octx.lineTo(cx, cy + size * 0.12);
+    octx.closePath(); octx.fill();
+
+    octx.strokeStyle = 'rgba(255,255,255,0.85)';
+    octx.lineWidth = Math.max(2, size * 0.015);
+    octx.strokeRect(1, 1, size - 2, size - 2);
+
+    return outCanvas;
+  }
+
+  function drawOverlay(ctx, w, h, { address, lat, lon, accuracy, timestamp, mapThumb }) {
     const pad = Math.round(w * 0.03);
     ctx.font = `${Math.round(w * 0.032)}px sans-serif`;
-    const addressLines = wrapText(ctx, address, w - pad * 2 - w * 0.10);
+    const thumbSize = mapThumb ? Math.round(w * 0.22) : 0;
+    const textAreaWidth = w - pad * 2 - (thumbSize ? thumbSize + pad : w * 0.10);
+    const addressLines = wrapText(ctx, address, textAreaWidth);
     const lineHeight = Math.round(w * 0.045);
     const infoLines = [
       `Lat: ${lat.toFixed(6)}, Lon: ${lon.toFixed(6)} (±${Math.round(accuracy)}m)`,
       timestamp
     ];
     const totalLines = addressLines.length + infoLines.length;
-    const barHeight = pad * 2 + totalLines * lineHeight;
+    const textBlockHeight = totalLines * lineHeight;
+    const barHeight = Math.max(pad * 2 + textBlockHeight, thumbSize + pad * 2);
 
     // semi-transparent bar
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
     ctx.fillRect(0, h - barHeight, w, barHeight);
 
-    // simple location pin icon
-    const pinX = pad + w * 0.02;
-    const pinY = h - barHeight + pad + w * 0.02;
-    ctx.fillStyle = '#ff4757';
-    ctx.beginPath();
-    ctx.arc(pinX, pinY, w * 0.018, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(pinX - w * 0.014, pinY + w * 0.01);
-    ctx.lineTo(pinX + w * 0.014, pinY + w * 0.01);
-    ctx.lineTo(pinX, pinY + w * 0.045);
-    ctx.closePath();
-    ctx.fill();
+    let tx;
+    if (mapThumb) {
+      const thumbY = h - barHeight + (barHeight - thumbSize) / 2;
+      ctx.drawImage(mapThumb, pad, thumbY, thumbSize, thumbSize);
+      tx = pad + thumbSize + pad;
+    } else {
+      // fallback: simple drawn pin icon if the map tiles couldn't be loaded
+      const pinX = pad + w * 0.02;
+      const pinY = h - barHeight + pad + w * 0.02;
+      ctx.fillStyle = '#ff4757';
+      ctx.beginPath(); ctx.arc(pinX, pinY, w * 0.018, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(pinX - w * 0.014, pinY + w * 0.01);
+      ctx.lineTo(pinX + w * 0.014, pinY + w * 0.01);
+      ctx.lineTo(pinX, pinY + w * 0.045);
+      ctx.closePath(); ctx.fill();
+      tx = pad + w * 0.10;
+    }
 
-    // text
+    // vertically center the text block within the bar
+    let ty = h - barHeight + Math.max(pad, (barHeight - textBlockHeight) / 2);
     ctx.fillStyle = '#ffffff';
     ctx.textBaseline = 'top';
-    let ty = h - barHeight + pad;
-    const tx = pad + w * 0.10;
     for (const l of addressLines) { ctx.fillText(l, tx, ty); ty += lineHeight; }
     ctx.fillStyle = '#e2e2e2';
     for (const l of infoLines) { ctx.fillText(l, tx, ty); ty += lineHeight; }
@@ -231,19 +311,24 @@
       const coords = await getLocation();
       const { latitude: lat, longitude: lon, accuracy } = coords;
 
-      statusText.textContent = 'Looking up address…';
-      const address = await reverseGeocode(lat, lon);
-
-      // draw the video frame
+      statusText.textContent = 'Looking up address & building map…';
       const w = video.videoWidth;
       const h = video.videoHeight;
+      const thumbSize = Math.round(w * 0.22);
+
+      const [address, mapThumb] = await Promise.all([
+        reverseGeocode(lat, lon),
+        buildMapThumbnail(lat, lon, thumbSize).catch(() => null) // null = fall back to a simple pin icon
+      ]);
+
+      // draw the video frame
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0, w, h);
 
       const timestamp = new Date().toLocaleString();
-      drawOverlay(ctx, w, h, { address, lat, lon, accuracy, timestamp });
+      drawOverlay(ctx, w, h, { address, lat, lon, accuracy, timestamp, mapThumb });
 
       const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
       resultImage.src = dataUrl;

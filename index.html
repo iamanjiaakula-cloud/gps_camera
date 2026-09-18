@@ -2,10 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<meta name="viewport"
+      content="width=device-width, initial-scale=1.0">
+
 <title>GPS Geo Camera</title>
 
 <style>
+
 * {
     box-sizing: border-box;
 }
@@ -17,14 +21,16 @@ body {
     font-family: Arial, sans-serif;
 }
 
+/* HEADER */
+
 .header {
     text-align: center;
-    padding: 15px 10px 8px;
+    padding: 15px 10px 10px;
 }
 
 .header h1 {
     margin: 0;
-    font-size: 23px;
+    font-size: 24px;
 }
 
 .header p {
@@ -33,35 +39,55 @@ body {
     font-size: 13px;
 }
 
+/* CAMERA */
+
 .camera-container {
     width: 100%;
     max-width: 700px;
     margin: auto;
     background: #000;
-    position: relative;
+    overflow: hidden;
 }
 
 video {
     width: 100%;
+    height: auto;
     display: block;
     background: #000;
 }
 
+/* STATUS */
+
+.status {
+    max-width: 700px;
+    margin: auto;
+    padding: 10px;
+    text-align: center;
+    color: #ddd;
+    font-size: 14px;
+}
+
+/* BUTTONS */
+
 .controls {
     max-width: 700px;
     margin: auto;
-    padding: 12px;
+    padding: 14px 8px;
     text-align: center;
 }
 
 button {
     border: none;
-    border-radius: 9px;
+    border-radius: 10px;
     padding: 13px 18px;
-    margin: 4px;
+    margin: 5px;
     font-size: 15px;
     font-weight: bold;
     cursor: pointer;
+}
+
+button:active {
+    transform: scale(0.97);
 }
 
 .start {
@@ -80,39 +106,48 @@ button {
 }
 
 .capture {
+    width: 76px;
+    height: 76px;
+    padding: 0;
+    border-radius: 50%;
     background: white;
     color: black;
-    width: 72px;
-    height: 72px;
-    border-radius: 50%;
-    font-size: 24px;
+    font-size: 25px;
     border: 5px solid #aaa;
 }
 
-.status {
-    max-width: 700px;
-    margin: auto;
-    padding: 10px;
-    text-align: center;
-    font-size: 14px;
-    color: #ddd;
+.download {
+    display: none;
+    background: #ff9800;
+    color: white;
+    margin-top: 12px;
 }
+
+/* GPS INFORMATION */
 
 .info {
     max-width: 700px;
     margin: 8px auto;
-    background: #1e1e1e;
-    padding: 12px;
+    padding: 14px;
+    background: #1f1f1f;
     border-radius: 10px;
-    line-height: 1.7;
     font-size: 14px;
+    line-height: 1.7;
+    overflow-wrap: anywhere;
 }
+
+.info-title {
+    font-size: 18px;
+    font-weight: bold;
+}
+
+/* PHOTO PREVIEW */
 
 .preview-box {
     max-width: 700px;
     margin: 15px auto;
+    padding: 8px;
     text-align: center;
-    padding: 10px;
 }
 
 #preview {
@@ -121,343 +156,782 @@ button {
     border-radius: 8px;
 }
 
-.download {
-    display: none;
-    background: #ff9800;
-    color: white;
-    margin-top: 10px;
-}
+/* HIDDEN CANVAS */
 
 canvas {
     display: none;
 }
 
-.small {
-    color: #999;
-    font-size: 12px;
+/* FOOTER */
+
+.footer {
     text-align: center;
-    padding: 10px;
+    color: #888;
+    font-size: 12px;
+    padding: 15px;
 }
+
 </style>
 </head>
 
 <body>
 
+
+<!-- ==========================================
+     HEADER
+========================================== -->
+
 <div class="header">
+
     <h1>📍 GPS Geo Camera</h1>
-    <p>Photo • Location • Date • Time</p>
+
+    <p>
+        Photo • GPS • Address • Date • Time
+    </p>
+
 </div>
+
+
+<!-- ==========================================
+     STATUS
+========================================== -->
 
 <div class="status" id="status">
+
     Camera not started
+
 </div>
 
+
+<!-- ==========================================
+     CAMERA
+========================================== -->
+
 <div class="camera-container">
-    <video id="video" autoplay playsinline></video>
+
+    <video
+        id="video"
+        autoplay
+        playsinline>
+    </video>
+
 </div>
+
+
+<!-- ==========================================
+     CONTROLS
+========================================== -->
 
 <div class="controls">
 
-    <button class="start" onclick="startCamera()">
+    <button
+        class="start"
+        onclick="startCamera()">
+
         📷 Start Camera
+
     </button>
 
-    <button class="gps" onclick="getGPS()">
+
+    <button
+        class="gps"
+        onclick="getGPS()">
+
         📍 Get GPS
+
     </button>
 
     <br>
 
-    <button class="switch" onclick="switchCamera()">
+
+    <button
+        class="switch"
+        onclick="switchCamera()">
+
         🔄 Switch Camera
+
     </button>
 
-    <button class="capture" onclick="capturePhoto()">
+
+    <button
+        class="capture"
+        onclick="capturePhoto()">
+
         📷
+
     </button>
 
 </div>
 
-<div class="info" id="locationInfo">
-    <b>GPS Information</b><br>
-    Waiting for location...
+
+<!-- ==========================================
+     GPS INFORMATION
+========================================== -->
+
+<div
+    class="info"
+    id="locationInfo">
+
+    <div class="info-title">
+        📍 GPS Information
+    </div>
+
+    <div>
+        Waiting for GPS location...
+    </div>
+
 </div>
+
+
+<!-- ==========================================
+     PHOTO PREVIEW
+========================================== -->
 
 <div class="preview-box">
 
-    <img id="preview">
+    <img
+        id="preview"
+        alt="Captured GPS Photo">
+
 
     <button
         id="downloadBtn"
         class="download"
         onclick="downloadPhoto()">
+
         ⬇️ Save Geo-Tagged Photo
+
     </button>
 
 </div>
 
-<div class="small">
-    GPS accuracy depends on your phone and surroundings.
+
+<div class="footer">
+
+    GPS accuracy depends on your phone,
+    GPS signal and surroundings.
+
 </div>
+
+
+<!-- ==========================================
+     CANVAS
+========================================== -->
 
 <canvas id="canvas"></canvas>
 
+
 <script>
 
-let video = document.getElementById("video");
-let canvas = document.getElementById("canvas");
-let preview = document.getElementById("preview");
+
+/* ==========================================
+   VARIABLES
+========================================== */
+
+let video =
+    document.getElementById("video");
+
+let canvas =
+    document.getElementById("canvas");
+
+let preview =
+    document.getElementById("preview");
 
 let stream = null;
 
 let latitude = null;
+
 let longitude = null;
+
 let accuracy = null;
-let address = "Location not available";
 
-let facingMode = "environment";
+let address =
+    "Address unavailable";
+
+let facingMode =
+    "environment";
 
 
-// =====================================
-// START CAMERA
-// =====================================
+/* ==========================================
+   START CAMERA
+========================================== */
 
 async function startCamera() {
 
     try {
 
-        if (!navigator.mediaDevices ||
-            !navigator.mediaDevices.getUserMedia) {
+        if (
+            !navigator.mediaDevices ||
+            !navigator.mediaDevices.getUserMedia
+        ) {
 
             throw new Error(
-                "Camera API is not supported."
+                "Camera is not supported by this browser."
             );
+
         }
+
+
+        /* Stop previous camera */
 
         if (stream) {
 
-            stream.getTracks().forEach(
-                track => track.stop()
-            );
+            stream
+                .getTracks()
+                .forEach(
+                    track => track.stop()
+                );
+
         }
 
-        stream = await navigator.mediaDevices.getUserMedia({
 
-            video: {
-                facingMode: facingMode,
-                width: {
-                    ideal: 1920
+        /* Start camera */
+
+        stream =
+            await navigator.mediaDevices.getUserMedia({
+
+                video: {
+
+                    facingMode:
+                        facingMode,
+
+                    width: {
+                        ideal: 1920
+                    },
+
+                    height: {
+                        ideal: 1080
+                    }
+
                 },
-                height: {
-                    ideal: 1080
-                }
-            },
 
-            audio: false
-        });
+                audio: false
 
-        video.srcObject = stream;
+            });
 
-        document.getElementById("status").innerText =
+
+        video.srcObject =
+            stream;
+
+
+        document.getElementById(
+            "status"
+        ).innerText =
             "✅ Camera is ready";
 
-    } catch (error) {
+
+    }
+
+    catch (error) {
 
         console.error(error);
 
-        document.getElementById("status").innerText =
-            "❌ Camera error: " + error.message;
+        document.getElementById(
+            "status"
+        ).innerText =
+            "❌ Camera Error: " +
+            error.message;
+
     }
+
 }
 
 
-// =====================================
-// SWITCH CAMERA
-// =====================================
+/* ==========================================
+   SWITCH CAMERA
+========================================== */
 
 async function switchCamera() {
 
-    facingMode =
-        facingMode === "environment"
-        ? "user"
-        : "environment";
+    if (facingMode === "environment") {
+
+        facingMode = "user";
+
+    }
+
+    else {
+
+        facingMode = "environment";
+
+    }
+
 
     await startCamera();
+
 }
 
 
-// =====================================
-// GET GPS
-// =====================================
+/* ==========================================
+   GET GPS
+========================================== */
 
 function getGPS() {
 
+
     if (!navigator.geolocation) {
 
-        document.getElementById("locationInfo").innerHTML =
-            "❌ GPS is not supported by this browser.";
+        document.getElementById(
+            "locationInfo"
+        ).innerHTML =
+
+            "<div class='info-title'>" +
+            "❌ GPS Not Supported" +
+            "</div>";
 
         return;
+
     }
 
-    document.getElementById("locationInfo").innerHTML =
-        "📍 <b>Getting GPS location...</b>";
+
+    document.getElementById(
+        "locationInfo"
+    ).innerHTML =
+
+        "<div class='info-title'>" +
+        "📍 Getting GPS..." +
+        "</div>" +
+
+        "<div>Please wait...</div>";
+
 
     navigator.geolocation.getCurrentPosition(
 
         async function(position) {
 
+
             latitude =
                 position.coords.latitude;
+
 
             longitude =
                 position.coords.longitude;
 
+
             accuracy =
                 position.coords.accuracy;
 
-            document.getElementById("locationInfo").innerHTML =
-                "📍 <b>GPS Location Found</b><br>" +
+
+            /* Show GPS first */
+
+            document.getElementById(
+                "locationInfo"
+            ).innerHTML =
+
+                "<div class='info-title'>" +
+                "📍 GPS Location Found" +
+                "</div>" +
+
+                "<div>" +
+
                 "Latitude: " +
                 latitude.toFixed(6) +
+
                 "<br>" +
+
                 "Longitude: " +
                 longitude.toFixed(6) +
+
                 "<br>" +
+
                 "Accuracy: ±" +
                 Math.round(accuracy) +
-                " meters<br>" +
-                "🏠 Getting address...";
+                " meters" +
+
+                "<br><br>" +
+
+                "🏠 Getting address..." +
+
+                "</div>";
+
+
+            /* Get address */
 
             await getAddress(
                 latitude,
                 longitude
             );
 
+
         },
+
 
         function(error) {
 
-            let message = "";
+
+            let message;
+
 
             if (error.code === 1) {
+
                 message =
                     "Location permission denied.";
+
             }
 
             else if (error.code === 2) {
+
                 message =
                     "Location unavailable.";
+
             }
 
             else if (error.code === 3) {
+
                 message =
                     "GPS request timed out.";
+
             }
 
             else {
+
                 message =
                     error.message;
+
             }
 
-            document.getElementById("locationInfo").innerHTML =
-                "❌ GPS Error: " + message;
+
+            document.getElementById(
+                "locationInfo"
+            ).innerHTML =
+
+                "<div class='info-title'>" +
+                "❌ GPS Error" +
+                "</div>" +
+
+                "<div>" +
+                message +
+                "</div>";
+
         },
 
+
         {
+
             enableHighAccuracy: true,
+
             timeout: 20000,
+
             maximumAge: 0
+
         }
+
     );
+
 }
 
 
-// =====================================
-// GET ADDRESS
-// =====================================
+/* ==========================================
+   GET ADDRESS
+========================================== */
 
-async function getAddress(lat, lon) {
+async function getAddress(
+    lat,
+    lon
+) {
+
 
     try {
 
+
         const url =
+
             "https://nominatim.openstreetmap.org/reverse" +
+
             "?format=json" +
-            "&lat=" + encodeURIComponent(lat) +
-            "&lon=" + encodeURIComponent(lon) +
+
+            "&lat=" +
+            encodeURIComponent(lat) +
+
+            "&lon=" +
+            encodeURIComponent(lon) +
+
             "&zoom=18" +
+
             "&addressdetails=1";
+
 
         const response =
             await fetch(url, {
+
                 headers: {
-                    "Accept": "application/json"
+
+                    "Accept":
+                        "application/json"
+
                 }
+
             });
 
+
         if (!response.ok) {
+
             throw new Error(
                 "Address service unavailable"
             );
+
         }
+
 
         const data =
             await response.json();
 
-        if (data.display_name) {
+
+        if (
+            data &&
+            data.display_name
+        ) {
 
             address =
                 data.display_name;
 
-        } else {
-
-            address =
-                "Address not available";
         }
 
-        document.getElementById("locationInfo").innerHTML =
-            "📍 <b>GPS Location Found</b><br>" +
+        else {
+
+            address =
+                "Address unavailable";
+
+        }
+
+
+        /* Update screen */
+
+        document.getElementById(
+            "locationInfo"
+        ).innerHTML =
+
+            "<div class='info-title'>" +
+            "📍 GPS Location Found" +
+            "</div>" +
+
+            "<div>" +
+
             "Latitude: " +
             latitude.toFixed(6) +
+
             "<br>" +
+
             "Longitude: " +
             longitude.toFixed(6) +
+
             "<br>" +
+
             "Accuracy: ±" +
             Math.round(accuracy) +
-            " meters<br>" +
-            "🏠 " +
-            address;
+            " meters" +
 
-    } catch (error) {
+            "<br><br>" +
+
+            "🏠 <b>Address:</b><br>" +
+
+            address +
+
+            "</div>";
+
+
+    }
+
+    catch (error) {
+
 
         console.error(error);
+
 
         address =
             "Address unavailable";
 
-        document.getElementById("locationInfo").innerHTML =
-            "📍 <b>GPS Location Found</b><br>" +
+
+        document.getElementById(
+            "locationInfo"
+        ).innerHTML =
+
+            "<div class='info-title'>" +
+            "📍 GPS Location Found" +
+            "</div>" +
+
+            "<div>" +
+
             "Latitude: " +
             latitude.toFixed(6) +
+
             "<br>" +
+
             "Longitude: " +
             longitude.toFixed(6) +
+
             "<br>" +
+
             "Accuracy: ±" +
             Math.round(accuracy) +
-            " meters<br>" +
-            "🏠 Address unavailable";
+            " meters" +
+
+            "<br><br>" +
+
+            "🏠 Address unavailable" +
+
+            "</div>";
+
     }
+
 }
 
 
-// =====================================
-// CAPTURE PHOTO
-// =====================================
+/* ==========================================
+   DRAW WRAPPED TEXT
+========================================== */
+
+function drawWrappedText(
+    ctx,
+    text,
+    x,
+    y,
+    maxWidth,
+    lineHeight,
+    maxLines
+) {
+
+
+    const words =
+        String(text)
+        .split(/\s+/);
+
+
+    let line = "";
+
+    let lines = [];
+
+
+    for (
+        let i = 0;
+        i < words.length;
+        i++
+    ) {
+
+
+        const testLine =
+
+            line === ""
+
+            ? words[i]
+
+            : line +
+              " " +
+              words[i];
+
+
+        const width =
+            ctx.measureText(
+                testLine
+            ).width;
+
+
+        if (
+            width > maxWidth &&
+            line !== ""
+        ) {
+
+
+            lines.push(
+                line
+            );
+
+
+            line =
+                words[i];
+
+
+        }
+
+        else {
+
+            line =
+                testLine;
+
+        }
+
+    }
+
+
+    if (line !== "") {
+
+        lines.push(line);
+
+    }
+
+
+    /* Limit number of lines */
+
+    if (
+        lines.length >
+        maxLines
+    ) {
+
+        lines =
+            lines.slice(
+                0,
+                maxLines
+            );
+
+
+        let last =
+            lines[maxLines - 1];
+
+
+        if (
+            last.length > 3
+        ) {
+
+            last =
+                last.substring(
+                    0,
+                    last.length - 3
+                ) +
+                "...";
+
+        }
+
+
+        lines[
+            maxLines - 1
+        ] = last;
+
+    }
+
+
+    /* Draw lines */
+
+    for (
+        let i = 0;
+        i < lines.length;
+        i++
+    ) {
+
+        ctx.fillText(
+            lines[i],
+            x,
+            y +
+            (
+                i *
+                lineHeight
+            )
+        );
+
+    }
+
+
+    return lines.length;
+
+}
+
+
+/* ==========================================
+   CAPTURE PHOTO
+========================================== */
 
 function capturePhoto() {
+
+
+    /* Check camera */
 
     if (!stream) {
 
@@ -466,26 +940,42 @@ function capturePhoto() {
         );
 
         return;
+
     }
 
-    if (latitude === null ||
-        longitude === null) {
+
+    /* Check GPS */
+
+    if (
+        latitude === null ||
+        longitude === null
+    ) {
 
         alert(
             "Please tap 'Get GPS' first."
         );
 
         return;
+
     }
 
-    if (video.videoWidth === 0) {
+
+    /* Check video */
+
+    if (
+        video.videoWidth === 0
+    ) {
 
         alert(
             "Camera is not ready yet."
         );
 
         return;
+
     }
+
+
+    /* Canvas size */
 
     canvas.width =
         video.videoWidth;
@@ -493,231 +983,378 @@ function capturePhoto() {
     canvas.height =
         video.videoHeight;
 
+
     const ctx =
-        canvas.getContext("2d");
-
-
-    // Draw camera image
-    ctx.drawImage(
-        video,
-        0,
-        0,
-        canvas.width,
-        canvas.height
-    );
-
-
-    // =================================
-    // INFORMATION PANEL
-    // =================================
-
-    const panelHeight = 185;
-
-    const panelY =
-        canvas.height - panelHeight;
-
-
-    // Transparent black panel
-    ctx.fillStyle =
-        "rgba(0,0,0,0.72)";
-
-    ctx.fillRect(
-        0,
-        panelY,
-        canvas.width,
-        panelHeight
-    );
-
-
-    // White vertical line
-    ctx.fillStyle = "white";
-
-    ctx.fillRect(
-        15,
-        panelY + 18,
-        4,
-        panelHeight - 36
-    );
-
-
-    // Title
-    ctx.font =
-        "bold 25px Arial";
-
-    ctx.fillText(
-        "📍 GPS GEO CAMERA",
-        35,
-        panelY + 38
-    );
-
-
-    // Coordinates
-    ctx.font =
-        "19px Arial";
-
-    ctx.fillText(
-        "Lat: " +
-        latitude.toFixed(6),
-        35,
-        panelY + 70
-    );
-
-    ctx.fillText(
-        "Lon: " +
-        longitude.toFixed(6),
-        35,
-        panelY + 98
-    );
-
-
-    // Accuracy
-    ctx.font =
-        "16px Arial";
-
-    ctx.fillText(
-        "Accuracy: ±" +
-        Math.round(accuracy) +
-        " m",
-        35,
-        panelY + 124
-    );
-
-
-    // Address
-    ctx.font =
-        "15px Arial";
-
-    let addressText =
-        address;
-
-    const maxWidth =
-        canvas.width - 55;
-
-    let words =
-        addressText.split(" ");
-
-    let line = "";
-    let lines = [];
-
-    for (let i = 0;
-         i < words.length;
-         i++) {
-
-        let test =
-            line + words[i] + " ";
-
-        if (
-            ctx.measureText(test).width >
-            maxWidth &&
-            line !== ""
-        ) {
-
-            lines.push(line);
-
-            line =
-                words[i] + " ";
-
-        } else {
-
-            line = test;
-        }
-    }
-
-    if (line !== "") {
-        lines.push(line);
-    }
-
-
-    // Only show maximum 2 address lines
-    lines =
-        lines.slice(0, 2);
-
-    for (let i = 0;
-         i < lines.length;
-         i++) {
-
-        ctx.fillText(
-            lines[i],
-            35,
-            panelY + 148 +
-            (i * 18)
+        canvas.getContext(
+            "2d"
         );
-    }
 
 
-    // =================================
-    // DATE & TIME
-    // =================================
+    /* Draw camera image */
+
+    ctx.drawImage(
+
+        video,
+
+        0,
+
+        0,
+
+        canvas.width,
+
+        canvas.height
+
+    );
+
+
+    /* ======================================
+       DATE & TIME
+    ====================================== */
 
     const now =
         new Date();
+
 
     const date =
         now.toLocaleDateString(
             "en-IN"
         );
 
+
     const time =
         now.toLocaleTimeString(
             "en-IN"
         );
 
-    ctx.font =
-        "bold 15px Arial";
 
-    ctx.fillText(
-        date + "  " + time,
-        canvas.width - 200,
-        30
+    /* ======================================
+       ADDRESS PREPARATION
+    ====================================== */
+
+    const cleanAddress =
+        address ||
+        "Address unavailable";
+
+
+    /*
+       We use a large bottom panel.
+       This gives the address enough space.
+    */
+
+    const panelHeight = 300;
+
+
+    const panelY =
+        canvas.height -
+        panelHeight;
+
+
+    /* ======================================
+       DARK PANEL
+    ====================================== */
+
+    ctx.fillStyle =
+        "rgba(0,0,0,0.78)";
+
+
+    ctx.fillRect(
+
+        0,
+
+        panelY,
+
+        canvas.width,
+
+        panelHeight
+
     );
 
 
-    // Convert to JPG
-    const image =
+    /* ======================================
+       LEFT LINE
+    ====================================== */
+
+    ctx.fillStyle =
+        "white";
+
+
+    ctx.fillRect(
+
+        18,
+
+        panelY + 18,
+
+        5,
+
+        panelHeight - 36
+
+    );
+
+
+    /* ======================================
+       TITLE
+    ====================================== */
+
+    ctx.font =
+        "bold 27px Arial";
+
+
+    ctx.fillText(
+
+        "GPS GEO CAMERA",
+
+        40,
+
+        panelY + 42
+
+    );
+
+
+    /* ======================================
+       COORDINATES
+    ====================================== */
+
+    ctx.font =
+        "20px Arial";
+
+
+    ctx.fillText(
+
+        "Latitude: " +
+        latitude.toFixed(6),
+
+        40,
+
+        panelY + 78
+
+    );
+
+
+    ctx.fillText(
+
+        "Longitude: " +
+        longitude.toFixed(6),
+
+        40,
+
+        panelY + 108
+
+    );
+
+
+    /* ======================================
+       ACCURACY
+    ====================================== */
+
+    ctx.font =
+        "17px Arial";
+
+
+    ctx.fillText(
+
+        "GPS Accuracy: ±" +
+        Math.round(accuracy) +
+        " meters",
+
+        40,
+
+        panelY + 137
+
+    );
+
+
+    /* ======================================
+       ADDRESS TITLE
+    ====================================== */
+
+    ctx.font =
+        "bold 18px Arial";
+
+
+    ctx.fillText(
+
+        "Address:",
+
+        40,
+
+        panelY + 170
+
+    );
+
+
+    /* ======================================
+       ADDRESS
+    ====================================== */
+
+    ctx.font =
+        "17px Arial";
+
+
+    const addressMaxWidth =
+        canvas.width - 75;
+
+
+    drawWrappedText(
+
+        ctx,
+
+        cleanAddress,
+
+        40,
+
+        panelY + 198,
+
+        addressMaxWidth,
+
+        23,
+
+        4
+
+    );
+
+
+    /* ======================================
+       DATE & TIME
+    ====================================== */
+
+    ctx.font =
+        "bold 17px Arial";
+
+
+    ctx.fillText(
+
+        date +
+        "  " +
+        time,
+
+        40,
+
+        canvas.height - 15
+
+    );
+
+
+    /* ======================================
+       CREATE IMAGE
+    ====================================== */
+
+    const imageData =
         canvas.toDataURL(
+
             "image/jpeg",
+
             0.92
+
         );
 
+
+    /* Show preview */
+
     preview.src =
-        image;
+        imageData;
+
 
     preview.style.display =
         "block";
+
+
+    /* Show download button */
 
     document.getElementById(
         "downloadBtn"
     ).style.display =
         "inline-block";
+
+
+    /* Scroll to photo */
+
+    setTimeout(
+        function() {
+
+            preview.scrollIntoView({
+                behavior: "smooth"
+            });
+
+        },
+        200
+    );
+
 }
 
 
-// =====================================
-// DOWNLOAD
-// =====================================
+/* ==========================================
+   DOWNLOAD PHOTO
+========================================== */
 
 function downloadPhoto() {
 
-    const link =
-        document.createElement("a");
+
+    if (
+        !canvas.width ||
+        !canvas.height
+    ) {
+
+        alert(
+            "Please capture a photo first."
+        );
+
+        return;
+
+    }
+
 
     const now =
         new Date();
 
-    link.download =
+
+    const filename =
+
         "GPS_Photo_" +
+
         now.getFullYear() +
+
         "-" +
+
         String(
             now.getMonth() + 1
         ).padStart(2, "0") +
+
         "-" +
+
         String(
             now.getDate()
         ).padStart(2, "0") +
+
         "_" +
-        now.getTime() +
+
+        String(
+            now.getHours()
+        ).padStart(2, "0") +
+
+        "-" +
+
+        String(
+            now.getMinutes()
+        ).padStart(2, "0") +
+
+        "-" +
+
+        String(
+            now.getSeconds()
+        ).padStart(2, "0") +
+
         ".jpg";
+
+
+    const link =
+        document.createElement(
+            "a"
+        );
+
+
+    link.download =
+        filename;
+
 
     link.href =
         canvas.toDataURL(
@@ -725,10 +1362,22 @@ function downloadPhoto() {
             0.92
         );
 
+
+    document.body.appendChild(
+        link
+    );
+
+
     link.click();
+
+
+    document.body.removeChild(
+        link
+    );
+
 }
 
 </script>
 
 </body>
-</html>
+    </html>

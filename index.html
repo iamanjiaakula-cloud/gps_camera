@@ -152,16 +152,28 @@
     });
   }
 
+  // Converts a 2-letter ISO country code (e.g. "IN") into its flag emoji.
+  function countryCodeToFlag(cc) {
+    if (!cc || cc.length !== 2) return '';
+    return cc.toUpperCase().replace(/./g, ch => String.fromCodePoint(127397 + ch.charCodeAt(0)));
+  }
+
   // Reverse-geocode via OpenStreetMap Nominatim (free, rate-limited — fine for personal use).
+  // Returns a short bold "header" (city, state, country) and a fuller "detail" address line,
+  // similar to how commercial GPS-camera apps split the address into two lines.
   async function reverseGeocode(lat, lon) {
     try {
       const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1`;
       const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
       if (!res.ok) throw new Error('Lookup failed');
       const data = await res.json();
-      return data.display_name || 'Address unavailable';
+      const a = data.address || {};
+      const city = a.city || a.town || a.village || a.suburb || a.county || '';
+      const header = [city, a.state, a.country].filter(Boolean).join(', ') || 'Unknown location';
+      const flag = countryCodeToFlag(a.country_code);
+      return { header, detail: data.display_name || '', flag };
     } catch (e) {
-      return 'Address unavailable';
+      return { header: 'Unknown location', detail: 'Address unavailable', flag: '' };
     }
   }
 
@@ -192,12 +204,94 @@
     return { x, y, n };
   }
 
-  // Builds a small real-map thumbnail (OpenStreetMap raster tiles) centered on
-  // lat/lon with a pin marker, as an offscreen canvas ready to be drawn onto
-  // the photo. OSM's tile servers send Access-Control-Allow-Origin: *, so the
-  // tiles load without tainting the canvas and the final image can still be
-  // exported/downloaded normally.
-  async function buildMapThumbnail(lat, lon, size, zoom = 16) {
+  function withTimeout(promise, ms) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timeout')), ms);
+      promise.then(v => { clearTimeout(timer); resolve(v); },
+                   e => { clearTimeout(timer); reject(e); });
+    });
+  }
+
+  function loadImage(url, timeoutMs) {
+    return withTimeout(new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('tile failed to load'));
+      img.src = url;
+    }), timeoutMs);
+  }
+
+  // Draws a clear red map pin (circle head + point + drop shadow) centered
+  // in a size x size square. Used on both the real map and the fallback map,
+  // so a pin always looks the same regardless of which one is used.
+  function drawPin(ctx, size) {
+    const cx = size / 2;
+    const headCy = size * 0.38;
+    const headR = size * 0.16;
+    const tipY = size * 0.72;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(cx, tipY + size * 0.03, size * 0.09, size * 0.03, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#ea4335';
+    ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+    ctx.lineWidth = Math.max(1, size * 0.008);
+    ctx.beginPath();
+    ctx.arc(cx, headCy, headR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(cx - headR * 0.75, headCy + headR * 0.6);
+    ctx.lineTo(cx + headR * 0.75, headCy + headR * 0.6);
+    ctx.lineTo(cx, tipY);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(cx, headCy, headR * 0.42, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // A simple, always-available stylized "map" (pale background, a couple of
+  // road lines, a soft water/park block) so there's still a map-like image
+  // with a pin even when real map tiles can't be fetched (offline, blocked,
+  // slow connection, etc).
+  function createStylizedMapCanvas(size) {
+    const c = document.createElement('canvas');
+    c.width = size; c.height = size;
+    const ctx = c.getContext('2d');
+
+    ctx.fillStyle = '#eef1e6';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#cfe3ec';
+    ctx.fillRect(0, size * 0.62, size * 0.4, size * 0.38);
+    ctx.fillStyle = '#d9ead0';
+    ctx.fillRect(size * 0.68, 0, size * 0.32, size * 0.35);
+
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = Math.max(2, size * 0.02);
+    [0.3, 0.62].forEach(f => { ctx.beginPath(); ctx.moveTo(0, size * f); ctx.lineTo(size, size * f); ctx.stroke(); });
+    [0.35, 0.7].forEach(f => { ctx.beginPath(); ctx.moveTo(size * f, 0); ctx.lineTo(size * f, size); ctx.stroke(); });
+
+    drawPin(ctx, size);
+    ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, size - 2, size - 2);
+    return c;
+  }
+
+  // Fetches the OpenStreetMap tiles needed to cover a size x size window
+  // centered on lat/lon. Rejects (rather than leaving gaps) if any tile
+  // fails or times out, so the caller can cleanly fall back instead of
+  // showing a half-broken grid.
+  async function buildRealTileCanvas(lat, lon, size, zoom) {
     const { x: xtileF, y: ytileF, n } = lonLatToTileFloat(lat, lon, zoom);
     const centerPxX = xtileF * 256;
     const centerPxY = ytileF * 256;
@@ -218,88 +312,120 @@
       for (let ty = minTileY; ty <= maxTileY; ty++) {
         const wrappedX = ((tx % n) + n) % n;
         const url = `https://tile.openstreetmap.org/${zoom}/${wrappedX}/${ty}.png`;
-        loads.push(new Promise((resolve) => {
-          const img = new Image();
-          img.crossOrigin = 'anonymous';
-          img.onload = () => { gctx.drawImage(img, (tx - minTileX) * 256, (ty - minTileY) * 256); resolve(); };
-          img.onerror = () => resolve(); // leave that tile blank rather than fail the whole thumbnail
-          img.src = url;
+        loads.push(loadImage(url, 3000).then(img => {
+          gctx.drawImage(img, (tx - minTileX) * 256, (ty - minTileY) * 256);
         }));
       }
     }
     await Promise.all(loads);
 
     const outCanvas = document.createElement('canvas');
-    outCanvas.width = size;
-    outCanvas.height = size;
-    const octx = outCanvas.getContext('2d');
-    octx.drawImage(
+    outCanvas.width = size; outCanvas.height = size;
+    outCanvas.getContext('2d').drawImage(
       gridCanvas,
       minPxX - minTileX * 256, minPxY - minTileY * 256, size, size,
       0, 0, size, size
     );
-
-    // pin marker at the exact captured location (center of thumbnail)
-    const cx = size / 2, cy = size / 2;
-    octx.fillStyle = '#ff4757';
-    octx.beginPath(); octx.arc(cx, cy - size * 0.06, size * 0.07, 0, Math.PI * 2); octx.fill();
-    octx.beginPath();
-    octx.moveTo(cx - size * 0.06, cy - size * 0.01);
-    octx.lineTo(cx + size * 0.06, cy - size * 0.01);
-    octx.lineTo(cx, cy + size * 0.12);
-    octx.closePath(); octx.fill();
-
-    octx.strokeStyle = 'rgba(255,255,255,0.85)';
-    octx.lineWidth = Math.max(2, size * 0.015);
-    octx.strokeRect(1, 1, size - 2, size - 2);
-
     return outCanvas;
   }
 
-  function drawOverlay(ctx, w, h, { address, lat, lon, accuracy, timestamp, mapThumb }) {
+  // Builds the map thumbnail baked into the photo. Tries real OpenStreetMap
+  // tiles first; if that fails or is too slow, falls back to the stylized
+  // map above — either way this always resolves with a valid canvas that
+  // already has the pin drawn on it, so the photo never ends up without one.
+  async function buildMapThumbnail(lat, lon, size, zoom = 16) {
+    try {
+      const real = await withTimeout(buildRealTileCanvas(lat, lon, size, zoom), 5000);
+      const ctx = real.getContext('2d');
+      drawPin(ctx, size);
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.lineWidth = Math.max(2, size * 0.012);
+      ctx.strokeRect(1, 1, size - 2, size - 2);
+      return real;
+    } catch (e) {
+      return createStylizedMapCanvas(size);
+    }
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function formatTimestamp(d) {
+    const dayName = d.toLocaleDateString(undefined, { weekday: 'long' });
+    const dateStr = d.toLocaleDateString(undefined, { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const timeStr = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: true });
+    const offsetMin = -d.getTimezoneOffset();
+    const sign = offsetMin >= 0 ? '+' : '-';
+    const abs = Math.abs(offsetMin);
+    const hh = String(Math.floor(abs / 60)).padStart(2, '0');
+    const mm = String(abs % 60).padStart(2, '0');
+    return `${dayName}, ${dateStr} ${timeStr} GMT ${sign}${hh}:${mm}`;
+  }
+
+  function drawOverlay(ctx, w, h, { header, detail, flag, lat, lon, accuracy, timestamp, mapThumb, thumbSize }) {
     const pad = Math.round(w * 0.03);
-    ctx.font = `${Math.round(w * 0.032)}px sans-serif`;
-    const thumbSize = mapThumb ? Math.round(w * 0.22) : 0;
-    const textAreaWidth = w - pad * 2 - (thumbSize ? thumbSize + pad : w * 0.10);
-    const addressLines = wrapText(ctx, address, textAreaWidth);
-    const lineHeight = Math.round(w * 0.045);
+    const textAreaWidth = w - pad * 2 - thumbSize - pad;
+
+    const headerFontSize = Math.round(w * 0.038);
+    const bodyFontSize = Math.round(w * 0.028);
+    const lineHeight = Math.round(bodyFontSize * 1.5);
+    const headerLineHeight = Math.round(headerFontSize * 1.4);
+
+    ctx.font = `${bodyFontSize}px sans-serif`;
+    const detailLines = wrapText(ctx, detail, textAreaWidth).slice(0, 3);
     const infoLines = [
-      `Lat: ${lat.toFixed(6)}, Lon: ${lon.toFixed(6)} (±${Math.round(accuracy)}m)`,
+      `Lat ${lat.toFixed(6)}°  Long ${lon.toFixed(6)}°  (±${Math.round(accuracy)}m)`,
       timestamp
     ];
-    const totalLines = addressLines.length + infoLines.length;
-    const textBlockHeight = totalLines * lineHeight;
+
+    const textBlockHeight = headerLineHeight + (detailLines.length + infoLines.length) * lineHeight;
     const barHeight = Math.max(pad * 2 + textBlockHeight, thumbSize + pad * 2);
 
     // semi-transparent bar
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillStyle = 'rgba(0,0,0,0.62)';
     ctx.fillRect(0, h - barHeight, w, barHeight);
 
-    let tx;
-    if (mapThumb) {
-      const thumbY = h - barHeight + (barHeight - thumbSize) / 2;
-      ctx.drawImage(mapThumb, pad, thumbY, thumbSize, thumbSize);
-      tx = pad + thumbSize + pad;
-    } else {
-      // fallback: simple drawn pin icon if the map tiles couldn't be loaded
-      const pinX = pad + w * 0.02;
-      const pinY = h - barHeight + pad + w * 0.02;
-      ctx.fillStyle = '#ff4757';
-      ctx.beginPath(); ctx.arc(pinX, pinY, w * 0.018, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath();
-      ctx.moveTo(pinX - w * 0.014, pinY + w * 0.01);
-      ctx.lineTo(pinX + w * 0.014, pinY + w * 0.01);
-      ctx.lineTo(pinX, pinY + w * 0.045);
-      ctx.closePath(); ctx.fill();
-      tx = pad + w * 0.10;
-    }
+    // map thumbnail, bottom-left (always present — see buildMapThumbnail)
+    const thumbY = h - barHeight + (barHeight - thumbSize) / 2;
+    ctx.drawImage(mapThumb, pad, thumbY, thumbSize, thumbSize);
 
-    // vertically center the text block within the bar
-    let ty = h - barHeight + Math.max(pad, (barHeight - textBlockHeight) / 2);
+    // small app badge just above the bar, right-aligned
+    const badgeText = '📍 GPS Geo Camera';
+    ctx.font = `${Math.round(w * 0.024)}px sans-serif`;
+    const badgePadX = Math.round(w * 0.015);
+    const badgeW = ctx.measureText(badgeText).width + badgePadX * 2;
+    const badgeH = Math.round(w * 0.038);
+    const badgeX = w - pad - badgeW;
+    const badgeY = h - barHeight - badgeH - Math.round(w * 0.01);
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    roundRect(ctx, badgeX, badgeY, badgeW, badgeH, badgeH / 2);
+    ctx.fill();
     ctx.fillStyle = '#ffffff';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(badgeText, badgeX + badgePadX, badgeY + badgeH / 2);
+
+    // text content, to the right of the thumbnail
+    const tx = pad + thumbSize + pad;
+    let ty = h - barHeight + pad;
+
     ctx.textBaseline = 'top';
-    for (const l of addressLines) { ctx.fillText(l, tx, ty); ty += lineHeight; }
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${headerFontSize}px sans-serif`;
+    ctx.fillText(`${header} ${flag}`.trim(), tx, ty);
+    ty += headerLineHeight;
+
+    ctx.font = `${bodyFontSize}px sans-serif`;
     ctx.fillStyle = '#e2e2e2';
+    for (const l of detailLines) { ctx.fillText(l, tx, ty); ty += lineHeight; }
+
+    ctx.fillStyle = '#ffffff';
     for (const l of infoLines) { ctx.fillText(l, tx, ty); ty += lineHeight; }
   }
 
@@ -314,11 +440,11 @@
       statusText.textContent = 'Looking up address & building map…';
       const w = video.videoWidth;
       const h = video.videoHeight;
-      const thumbSize = Math.round(w * 0.22);
+      const thumbSize = Math.round(w * 0.17);
 
       const [address, mapThumb] = await Promise.all([
         reverseGeocode(lat, lon),
-        buildMapThumbnail(lat, lon, thumbSize).catch(() => null) // null = fall back to a simple pin icon
+        buildMapThumbnail(lat, lon, thumbSize) // always resolves — real tiles, or a stylized fallback with a pin
       ]);
 
       // draw the video frame
@@ -327,8 +453,11 @@
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0, w, h);
 
-      const timestamp = new Date().toLocaleString();
-      drawOverlay(ctx, w, h, { address, lat, lon, accuracy, timestamp, mapThumb });
+      const timestamp = formatTimestamp(new Date());
+      drawOverlay(ctx, w, h, {
+        header: address.header, detail: address.detail, flag: address.flag,
+        lat, lon, accuracy, timestamp, mapThumb, thumbSize
+      });
 
       const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
       resultImage.src = dataUrl;

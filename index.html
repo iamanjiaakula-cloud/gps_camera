@@ -14,11 +14,19 @@
   html, body {
     margin: 0; padding: 0; height: 100%; background:#000; color:#fff;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow: hidden; overscroll-behavior: none;
+  }
+  /* position:fixed + dvh keeps this pinned to the browser's *visible* area on
+     mobile, so nothing (like the download button) ends up hidden behind the
+     address bar or home-indicator area. */
+  #app {
+    position: fixed; inset: 0;
+    width: 100vw;
+    height: 100vh; height: 100dvh;
     overflow: hidden;
   }
-  #app { position: relative; width: 100vw; height: 100vh; }
 
-  #video, #resultView, #canvas {
+  #video, #canvas {
     position: absolute; top:0; left:0; width:100%; height:100%;
     object-fit: cover;
   }
@@ -50,16 +58,26 @@
   }
   #switchBtn { width:52px; height:52px; border-radius:50%; font-size:22px; padding:0; }
 
+  /* Result screen: a fixed 3-row layout (photo / map / buttons). Each row has
+     a defined size so the whole thing always fits the viewport — no
+     scrolling required, and the download button is always on screen. */
   #resultView {
-    display:none; flex-direction: column; background:#000; overflow-y:auto;
+    position: absolute; top:0; left:0; width:100%; height:100%;
+    display:none; flex-direction: column; background:#000;
     z-index: 10;
   }
   #resultView.active { display:flex; }
-  #resultImage { width:100%; display:block; }
-  #mapPreview { width:100%; height: 180px; background:#222; }
+  #resultImageWrap {
+    flex: 1 1 auto; min-height: 0;
+    display:flex; align-items:center; justify-content:center;
+    background:#000; overflow:hidden;
+  }
+  #resultImage { max-width:100%; max-height:100%; object-fit:contain; display:block; }
+  #mapPreview { flex: 0 0 100px; width:100%; height:100px; background:#222; }
   #resultControls {
-    display:flex; gap:16px; justify-content:center; padding: 16px;
-    padding-bottom: max(16px, env(safe-area-inset-bottom));
+    flex: 0 0 auto;
+    display:flex; gap:16px; justify-content:center;
+    padding: 12px 16px max(12px, env(safe-area-inset-bottom));
   }
 
   #statusText { display:block; }
@@ -81,7 +99,7 @@
   </div>
 
   <div id="resultView">
-    <img id="resultImage" alt="Captured geo-tagged photo" />
+    <div id="resultImageWrap"><img id="resultImage" alt="Captured geo-tagged photo" /></div>
     <div id="mapPreview"></div>
     <div id="resultControls">
       <button id="retakeBtn">Retake</button>
@@ -111,18 +129,30 @@
   let leafletMarker = null;
 
   // ---------- Camera handling ----------
+  // Tries the requested camera first with an exact match, then relaxes the
+  // constraint step by step. Some phones (especially ones with only one
+  // camera, or odd driver quirks) reject an "exact" facingMode outright —
+  // without this fallback chain that would just fail silently.
   async function startCamera() {
     stopCamera();
-    try {
-      currentStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: facingMode } },
-        audio: false
-      });
-      video.srcObject = currentStream;
-      statusText.textContent = 'Ready — tap the shutter to capture';
-    } catch (err) {
-      statusText.textContent = 'Camera access denied or unavailable: ' + err.message;
+    const attempts = [
+      { video: { facingMode: { exact: facingMode } }, audio: false },
+      { video: { facingMode }, audio: false },
+      { video: true, audio: false }
+    ];
+    let lastErr = null;
+    for (const constraints of attempts) {
+      try {
+        currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = currentStream;
+        try { await video.play(); } catch (e) { /* autoplay attr usually handles this anyway */ }
+        statusText.textContent = 'Ready — tap the shutter to capture';
+        return;
+      } catch (err) {
+        lastErr = err;
+      }
     }
+    statusText.textContent = 'Camera access denied or unavailable: ' + (lastErr ? lastErr.message : '');
   }
 
   function stopCamera() {
@@ -130,6 +160,7 @@
       currentStream.getTracks().forEach(t => t.stop());
       currentStream = null;
     }
+    video.srcObject = null; // fully detach so the next getUserMedia call isn't fighting the old stream
   }
 
   switchBtn.addEventListener('click', () => {
@@ -174,6 +205,40 @@
       return { header, detail: data.display_name || '', flag };
     } catch (e) {
       return { header: 'Unknown location', detail: 'Address unavailable', flag: '' };
+    }
+  }
+
+  function haversineMeters(lat1, lon1, lat2, lon2) {
+    const R = 6371000;
+    const toRad = d => d * Math.PI / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  }
+
+  // Finds the nearest named place/landmark within ~200m using the Overpass API
+  // (free, OpenStreetMap data) — this is the "nearby" reference line, separate
+  // from the exact reverse-geocoded address, similar to how map-camera apps
+  // show a landmark for extra context. Returns null if nothing nearby is named
+  // or the lookup fails/times out, in which case that line is simply omitted.
+  async function findNearbyPlace(lat, lon) {
+    try {
+      const query = `[out:json][timeout:8];(node(around:200,${lat},${lon})["name"];way(around:200,${lat},${lon})["name"];);out center 10;`;
+      const res = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: query });
+      if (!res.ok) throw new Error('Overpass failed');
+      const data = await res.json();
+      let best = null, bestDist = Infinity;
+      for (const el of data.elements || []) {
+        const elat = el.lat ?? (el.center && el.center.lat);
+        const elon = el.lon ?? (el.center && el.center.lon);
+        if (elat == null || elon == null || !el.tags || !el.tags.name) continue;
+        const d = haversineMeters(lat, lon, elat, elon);
+        if (d < bestDist) { bestDist = d; best = el.tags.name; }
+      }
+      return best ? { name: best, distance: Math.round(bestDist) } : null;
+    } catch (e) {
+      return null;
     }
   }
 
@@ -369,23 +434,25 @@
     return `${dayName}, ${dateStr} ${timeStr} GMT ${sign}${hh}:${mm}`;
   }
 
-  function drawOverlay(ctx, w, h, { header, detail, flag, lat, lon, accuracy, timestamp, mapThumb, thumbSize }) {
+  function drawOverlay(ctx, w, h, { header, detail, flag, nearby, lat, lon, accuracy, timestamp, mapThumb, thumbSize }) {
     const pad = Math.round(w * 0.03);
     const textAreaWidth = w - pad * 2 - thumbSize - pad;
 
     const headerFontSize = Math.round(w * 0.038);
-    const bodyFontSize = Math.round(w * 0.028);
+    const bodyFontSize = Math.round(w * 0.026);
     const lineHeight = Math.round(bodyFontSize * 1.5);
     const headerLineHeight = Math.round(headerFontSize * 1.4);
 
     ctx.font = `${bodyFontSize}px sans-serif`;
-    const detailLines = wrapText(ctx, detail, textAreaWidth).slice(0, 3);
+    const detailLines = wrapText(ctx, `Exact: ${detail}`, textAreaWidth).slice(0, 3);
+    const nearLines = nearby ? wrapText(ctx, `Near: ${nearby.name} (~${nearby.distance}m)`, textAreaWidth).slice(0, 1) : [];
     const infoLines = [
       `Lat ${lat.toFixed(6)}°  Long ${lon.toFixed(6)}°  (±${Math.round(accuracy)}m)`,
       timestamp
     ];
 
-    const textBlockHeight = headerLineHeight + (detailLines.length + infoLines.length) * lineHeight;
+    const bodyLineCount = detailLines.length + nearLines.length + infoLines.length;
+    const textBlockHeight = headerLineHeight + bodyLineCount * lineHeight;
     const barHeight = Math.max(pad * 2 + textBlockHeight, thumbSize + pad * 2);
 
     // semi-transparent bar
@@ -425,6 +492,11 @@
     ctx.fillStyle = '#e2e2e2';
     for (const l of detailLines) { ctx.fillText(l, tx, ty); ty += lineHeight; }
 
+    if (nearLines.length) {
+      ctx.fillStyle = '#9fd6ff';
+      for (const l of nearLines) { ctx.fillText(l, tx, ty); ty += lineHeight; }
+    }
+
     ctx.fillStyle = '#ffffff';
     for (const l of infoLines) { ctx.fillText(l, tx, ty); ty += lineHeight; }
   }
@@ -442,9 +514,10 @@
       const h = video.videoHeight;
       const thumbSize = Math.round(w * 0.17);
 
-      const [address, mapThumb] = await Promise.all([
+      const [address, mapThumb, nearby] = await Promise.all([
         reverseGeocode(lat, lon),
-        buildMapThumbnail(lat, lon, thumbSize) // always resolves — real tiles, or a stylized fallback with a pin
+        buildMapThumbnail(lat, lon, thumbSize), // always resolves — real tiles, or a stylized fallback with a pin
+        withTimeout(findNearbyPlace(lat, lon), 6000).catch(() => null)
       ]);
 
       // draw the video frame
@@ -455,7 +528,7 @@
 
       const timestamp = formatTimestamp(new Date());
       drawOverlay(ctx, w, h, {
-        header: address.header, detail: address.detail, flag: address.flag,
+        header: address.header, detail: address.detail, flag: address.flag, nearby,
         lat, lon, accuracy, timestamp, mapThumb, thumbSize
       });
 
@@ -504,4 +577,4 @@
 })();
 </script>
 </body>
-</html>
+  </html>

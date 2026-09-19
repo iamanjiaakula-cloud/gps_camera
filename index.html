@@ -51,6 +51,7 @@
     background: rgba(255,255,255,0.15); cursor:pointer;
   }
   #captureBtn:active { background: rgba(255,255,255,0.4); }
+  #captureBtn:disabled { opacity: 0.4; }
   #switchBtn, #retakeBtn, #downloadBtn {
     background: rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.5);
     color:#fff; border-radius: 10px; padding: 10px 16px; font-size:15px;
@@ -94,7 +95,7 @@
 
   <div id="controls">
     <button id="switchBtn" title="Switch camera">🔄</button>
-    <button id="captureBtn" title="Capture"></button>
+    <button id="captureBtn" title="Capture" disabled></button>
     <div style="width:52px"></div>
   </div>
 
@@ -157,8 +158,26 @@
   // stream that never produces frames (a blank/black video). Selecting by the
   // camera's actual deviceId — once we know it from enumerateDevices — sidesteps
   // that entirely. We fall back to facingMode only before we have that list.
+  // Waits for the video element to actually be producing frames (nonzero
+  // dimensions). Guards the exact crash that happens if the shutter is tapped
+  // (or capture runs) before the stream is truly ready — most likely right
+  // after opening the camera or right after switching.
+  function waitForVideoReady(timeoutMs = 5000) {
+    return new Promise((resolve, reject) => {
+      if (video.videoWidth > 0 && video.videoHeight > 0) { resolve(); return; }
+      const start = Date.now();
+      const check = () => {
+        if (video.videoWidth > 0 && video.videoHeight > 0) { resolve(); return; }
+        if (Date.now() - start > timeoutMs) { reject(new Error('Camera is still starting up — please wait a moment and try again')); return; }
+        requestAnimationFrame(check);
+      };
+      check();
+    });
+  }
+
   async function startCamera() {
     stopCamera();
+    captureBtn.disabled = true;
     await new Promise(r => setTimeout(r, 250)); // let the camera hardware fully release first
 
     const attempts = [];
@@ -177,7 +196,13 @@
         video.srcObject = currentStream;
         try { await video.play(); } catch (e) { /* autoplay attr usually handles this anyway */ }
         if (!videoDevices.length || !videoDevices[0].label) await refreshVideoDevices(); // labels need permission first
-        statusText.textContent = 'Ready — tap the shutter to capture';
+        try {
+          await waitForVideoReady();
+          captureBtn.disabled = false;
+          statusText.textContent = 'Ready — tap the shutter to capture';
+        } catch (readyErr) {
+          statusText.textContent = readyErr.message;
+        }
         return;
       } catch (err) {
         lastErr = err;
@@ -187,6 +212,7 @@
   }
 
   function stopCamera() {
+    captureBtn.disabled = true;
     if (currentStream) {
       currentStream.getTracks().forEach(t => t.stop());
       currentStream = null;
@@ -226,7 +252,10 @@
 
   // Reverse-geocode via OpenStreetMap Nominatim (free, rate-limited — fine for personal use).
   // Returns a short bold "header" (city, state, country) and a fuller "detail" address line,
-  // similar to how commercial GPS-camera apps split the address into two lines.
+  // similar to how commercial GPS-camera apps split the address into two lines. The detail
+  // line is assembled from structured fields (house number first, when OSM has it tagged)
+  // rather than Nominatim's raw display_name, which occasionally includes odd/garbled
+  // tokens for a location and doesn't let us control field order.
   async function reverseGeocode(lat, lon) {
     try {
       const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1`;
@@ -237,7 +266,15 @@
       const city = a.city || a.town || a.village || a.suburb || a.county || '';
       const header = [city, a.state, a.country].filter(Boolean).join(', ') || 'Unknown location';
       const flag = countryCodeToFlag(a.country_code);
-      return { header, detail: data.display_name || '', flag };
+      const detailParts = [
+        a.house_number, a.road, a.suburb || a.neighbourhood,
+        city, a.state_district, a.state, a.postcode, a.country
+      ].filter(Boolean);
+      // House number only appears if OSM has it tagged for that spot — many
+      // areas (a lot of residential India included) simply aren't mapped down
+      // to that level of detail yet, so it won't always be there.
+      const detail = detailParts.length ? detailParts.join(', ') : (data.display_name || 'Address unavailable');
+      return { header, detail, flag };
     } catch (e) {
       return { header: 'Unknown location', detail: 'Address unavailable', flag: '' };
     }
@@ -487,7 +524,7 @@
     const headerLineHeight = Math.round(headerFontSize * 1.4);
 
     ctx.font = `${bodyFontSize}px sans-serif`;
-    const detailLines = wrapText(ctx, `Exact: ${detail}`, textAreaWidth).slice(0, 3);
+    const detailLines = wrapText(ctx, detail, textAreaWidth).slice(0, 3);
     const nearLines = nearby ? wrapText(ctx, `Near: ${nearby.name} (~${nearby.distance}m)`, textAreaWidth).slice(0, 1) : [];
     const infoLines = [
       `Lat ${lat.toFixed(6)}°  Long ${lon.toFixed(6)}°  (±${Math.round(accuracy)}m)`,
@@ -548,6 +585,9 @@
   captureBtn.addEventListener('click', async () => {
     captureBtn.disabled = true;
     try {
+      if (video.videoWidth === 0 || video.videoHeight === 0) {
+        await waitForVideoReady(); // extra safety net even if this somehow fired before the button was enabled
+      }
       statusText.textContent = 'Getting your location…';
       const coords = await getLocation();
       const { latitude: lat, longitude: lon, accuracy } = coords;

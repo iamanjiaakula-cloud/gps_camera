@@ -22,7 +22,7 @@
   #app {
     position: fixed; inset: 0;
     width: 100vw;
-    height: 100vh; height: 100dvh;
+    height: 100vh; height: 100dvh; height: var(--app-height, 100dvh);
     overflow: hidden;
   }
 
@@ -123,29 +123,60 @@
   const downloadBtn = document.getElementById('downloadBtn');
   const mapPreviewEl = document.getElementById('mapPreview');
 
+  // Some mobile browsers (older MIUI/Xiaomi WebViews included) don't support the
+  // "dvh" unit reliably, and 100vh alone often includes space hidden behind the
+  // address bar. Measuring the real visible height in JS and feeding it into a
+  // CSS variable is the dependable cross-browser fix — this is what actually
+  // keeps the download button on screen without needing to scroll.
+  function setAppHeight() {
+    const h = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+    document.documentElement.style.setProperty('--app-height', h + 'px');
+  }
+  setAppHeight();
+  window.addEventListener('resize', setAppHeight);
+  window.addEventListener('orientationchange', () => setTimeout(setAppHeight, 250));
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', setAppHeight);
+
   let currentStream = null;
-  let facingMode = 'environment'; // back camera by default
+  let facingMode = 'environment'; // fallback only, used until we have a labeled device list
+  let videoDevices = [];
+  let currentDeviceIndex = -1; // -1 = haven't switched to deviceId-based selection yet
   let leafletMap = null;
   let leafletMarker = null;
 
+  async function refreshVideoDevices() {
+    try {
+      const list = await navigator.mediaDevices.enumerateDevices();
+      videoDevices = list.filter(d => d.kind === 'videoinput');
+    } catch (e) { /* leave videoDevices as-is */ }
+  }
+
   // ---------- Camera handling ----------
-  // Tries the requested camera first with an exact match, then relaxes the
-  // constraint step by step. Some phones (especially ones with only one
-  // camera, or odd driver quirks) reject an "exact" facingMode outright —
-  // without this fallback chain that would just fail silently.
+  // Some phones (Xiaomi/MIUI devices among them) report facingMode metadata
+  // unreliably, which can make a "front camera" request silently return a
+  // stream that never produces frames (a blank/black video). Selecting by the
+  // camera's actual deviceId — once we know it from enumerateDevices — sidesteps
+  // that entirely. We fall back to facingMode only before we have that list.
   async function startCamera() {
     stopCamera();
-    const attempts = [
-      { video: { facingMode: { exact: facingMode } }, audio: false },
-      { video: { facingMode }, audio: false },
-      { video: true, audio: false }
-    ];
+    await new Promise(r => setTimeout(r, 250)); // let the camera hardware fully release first
+
+    const attempts = [];
+    const dev = currentDeviceIndex >= 0 ? videoDevices[currentDeviceIndex] : null;
+    if (dev) {
+      attempts.push({ video: { deviceId: { exact: dev.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    }
+    attempts.push({ video: { facingMode: { exact: facingMode }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    attempts.push({ video: { facingMode }, audio: false });
+    attempts.push({ video: true, audio: false });
+
     let lastErr = null;
     for (const constraints of attempts) {
       try {
         currentStream = await navigator.mediaDevices.getUserMedia(constraints);
         video.srcObject = currentStream;
         try { await video.play(); } catch (e) { /* autoplay attr usually handles this anyway */ }
+        if (!videoDevices.length || !videoDevices[0].label) await refreshVideoDevices(); // labels need permission first
         statusText.textContent = 'Ready — tap the shutter to capture';
         return;
       } catch (err) {
@@ -164,7 +195,11 @@
   }
 
   switchBtn.addEventListener('click', () => {
-    facingMode = facingMode === 'environment' ? 'user' : 'environment';
+    if (videoDevices.length > 1) {
+      currentDeviceIndex = currentDeviceIndex < 0 ? 1 % videoDevices.length : (currentDeviceIndex + 1) % videoDevices.length;
+    } else {
+      facingMode = facingMode === 'environment' ? 'user' : 'environment';
+    }
     startCamera();
   });
 
@@ -386,11 +421,19 @@
 
     const outCanvas = document.createElement('canvas');
     outCanvas.width = size; outCanvas.height = size;
-    outCanvas.getContext('2d').drawImage(
+    const octx = outCanvas.getContext('2d');
+    // Warms up OpenStreetMap's default grey/teal palette to read closer to the
+    // cream-and-blue look of commercial map apps. This is a render-time filter
+    // only (no pixel reads), so it can't trigger the CORS "tainted canvas"
+    // issue that a real Google Maps image would (confirmed that would break
+    // the download feature entirely — see note below).
+    if ('filter' in octx) octx.filter = 'saturate(1.35) hue-rotate(-6deg) brightness(1.04)';
+    octx.drawImage(
       gridCanvas,
       minPxX - minTileX * 256, minPxY - minTileY * 256, size, size,
       0, 0, size, size
     );
+    octx.filter = 'none';
     return outCanvas;
   }
 

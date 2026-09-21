@@ -18,13 +18,30 @@
   }
   /* position:fixed + dvh keeps this pinned to the browser's *visible* area on
      mobile, so nothing (like the download button) ends up hidden behind the
-     address bar or home-indicator area. */
+     address bar or home-indicator area. Inset by 1cm on every side, leaving a
+     blank border (the plain black body shows through) around the whole app. */
   #app {
-    position: fixed; inset: 0;
-    width: 100vw;
-    height: 100vh; height: 100dvh; height: var(--app-height, 100dvh);
+    position: fixed;
+    top: 1cm; left: 1cm;
+    width: calc(100vw - 2cm);
+    height: calc(100vh - 2cm);
+    height: calc(100dvh - 2cm);
+    height: calc(var(--app-height, 100dvh) - 2cm);
     overflow: hidden;
   }
+
+  /* The viewfinder is centered inside #app and, when a ratio other than
+     "Full" is picked, is constrained to that aspect ratio (portrait-style,
+     since that's how the phone is normally held) so the live preview matches
+     what the saved photo will actually be cropped to. */
+  #viewfinder {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: 100%; height: 100%;
+    overflow: hidden; background:#000;
+  }
+  #viewfinder[data-ratio="1:1"] { aspect-ratio: 1 / 1; width: auto; max-width: 100%; }
+  #viewfinder[data-ratio="4:3"] { aspect-ratio: 3 / 4; width: auto; max-width: 100%; }
+  #viewfinder[data-ratio="16:9"] { aspect-ratio: 9 / 16; width: auto; max-width: 100%; }
 
   #video, #canvas {
     position: absolute; top:0; left:0; width:100%; height:100%;
@@ -37,8 +54,14 @@
     position: absolute; top:0; left:0; right:0;
     padding: max(12px, env(safe-area-inset-top)) 16px 12px;
     background: linear-gradient(rgba(0,0,0,0.55), transparent);
-    font-size: 14px; text-align:center; z-index: 5;
+    font-size: 14px; z-index: 5;
     pointer-events:none;
+    display:flex; align-items:center; gap:8px;
+  }
+  #ratioBtn {
+    pointer-events: auto;
+    background: rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.5); color:#fff;
+    border-radius: 14px; padding: 5px 12px; font-size:13px; cursor:pointer;
   }
 
   #controls {
@@ -81,17 +104,22 @@
     padding: 12px 16px max(12px, env(safe-area-inset-bottom));
   }
 
-  #statusText { display:block; }
+  #statusText { flex: 1; text-align: center; }
   .hidden { display:none !important; }
 </style>
 </head>
 <body>
 <div id="app">
 
-  <video id="video" autoplay playsinline muted></video>
+  <div id="viewfinder" data-ratio="full">
+    <video id="video" autoplay playsinline muted></video>
+  </div>
   <canvas id="canvas"></canvas>
 
-  <div id="topBar"><span id="statusText">Starting camera…</span></div>
+  <div id="topBar">
+    <span id="statusText">Starting camera…</span>
+    <button id="ratioBtn" title="Aspect ratio">Full</button>
+  </div>
 
   <div id="controls">
     <button id="switchBtn" title="Switch camera">🔄</button>
@@ -114,15 +142,47 @@
 <script>
 (function () {
   const video = document.getElementById('video');
+  const viewfinder = document.getElementById('viewfinder');
   const canvas = document.getElementById('canvas');
   const statusText = document.getElementById('statusText');
   const captureBtn = document.getElementById('captureBtn');
   const switchBtn = document.getElementById('switchBtn');
+  const ratioBtn = document.getElementById('ratioBtn');
   const resultView = document.getElementById('resultView');
   const resultImage = document.getElementById('resultImage');
   const retakeBtn = document.getElementById('retakeBtn');
   const downloadBtn = document.getElementById('downloadBtn');
   const mapPreviewEl = document.getElementById('mapPreview');
+
+  // Aspect-ratio options, expressed as portrait width:height (since that's how
+  // the phone is normally held) — "Full" uses whatever the camera sensor
+  // natively delivers, uncropped. Cycling this both reshapes the live
+  // viewfinder and crops the actual saved photo to match.
+  const RATIOS = [
+    { key: 'full', label: 'Full', ratio: null },
+    { key: '1:1', label: '1:1', ratio: 1 },
+    { key: '4:3', label: '4:3', ratio: 3 / 4 },
+    { key: '16:9', label: '16:9', ratio: 9 / 16 }
+  ];
+  let ratioIndex = 0;
+
+  ratioBtn.addEventListener('click', () => {
+    ratioIndex = (ratioIndex + 1) % RATIOS.length;
+    const r = RATIOS[ratioIndex];
+    ratioBtn.textContent = r.label;
+    viewfinder.dataset.ratio = r.key;
+  });
+
+  // Given the camera's native frame size, returns the centered crop rectangle
+  // matching the chosen ratio (or the whole frame, uncropped, for "Full").
+  function computeCropRect(w, h, ratio) {
+    if (!ratio) return { x: 0, y: 0, w, h };
+    const current = w / h;
+    let cw, ch;
+    if (current > ratio) { ch = h; cw = Math.round(h * ratio); }
+    else { cw = w; ch = Math.round(w / ratio); }
+    return { x: Math.round((w - cw) / 2), y: Math.round((h - ch) / 2), w: cw, h: ch };
+  }
 
   // Some mobile browsers (older MIUI/Xiaomi WebViews included) don't support the
   // "dvh" unit reliably, and 100vh alone often includes space hidden behind the
@@ -248,6 +308,33 @@
   function countryCodeToFlag(cc) {
     if (!cc || cc.length !== 2) return '';
     return cc.toUpperCase().replace(/./g, ch => String.fromCodePoint(127397 + ch.charCodeAt(0)));
+  }
+
+  // Computes a 10-digit Open Location Code / "Plus Code" (e.g. "7JCXC4HJ+PW")
+  // straight from lat/lon — this is a published, patent-free, offline
+  // algorithm (no network call, no API key), so it can't fail or time out.
+  // Verified against Google's own documented example
+  // (51.3701125, -1.217765625 -> "9C3W9QCJ+2V") before wiring it in.
+  function toPlusCode(lat, lon) {
+    const ALPHABET = '23456789CFGHJMPQRVWX';
+    const RESOLUTIONS = [20, 1, 0.05, 0.0025, 0.000125]; // degrees, per digit pair
+    let clat = Math.max(-90, Math.min(90, lat));
+    if (clat === 90) clat -= RESOLUTIONS[RESOLUTIONS.length - 1];
+    const clon = ((lon + 180) % 360 + 360) % 360 - 180;
+
+    let latVal = clat + 90;   // 0..180
+    let lonVal = clon + 180;  // 0..360
+    let code = '';
+    for (let i = 0; i < RESOLUTIONS.length; i++) {
+      const res = RESOLUTIONS[i];
+      const latDigit = Math.floor(latVal / res + 1e-9); // epsilon guards float rounding at digit boundaries
+      latVal -= latDigit * res;
+      const lonDigit = Math.floor(lonVal / res + 1e-9);
+      lonVal -= lonDigit * res;
+      code += ALPHABET[latDigit] + ALPHABET[lonDigit];
+      if (i === 3) code += '+';
+    }
+    return code;
   }
 
   // Reverse-geocode via OpenStreetMap Nominatim (free, rate-limited — fine for personal use).
@@ -514,7 +601,7 @@
     return `${dayName}, ${dateStr} ${timeStr} GMT ${sign}${hh}:${mm}`;
   }
 
-  function drawOverlay(ctx, w, h, { header, detail, flag, nearby, lat, lon, accuracy, timestamp, mapThumb, thumbSize }) {
+  function drawOverlay(ctx, w, h, { header, detail, flag, plusCode, nearby, lat, lon, accuracy, timestamp, mapThumb, thumbSize }) {
     const pad = Math.round(w * 0.03);
     const textAreaWidth = w - pad * 2 - thumbSize - pad;
 
@@ -531,7 +618,7 @@
       timestamp
     ];
 
-    const bodyLineCount = detailLines.length + nearLines.length + infoLines.length;
+    const bodyLineCount = 1 /* plus code */ + detailLines.length + nearLines.length + infoLines.length;
     const textBlockHeight = headerLineHeight + bodyLineCount * lineHeight;
     const barHeight = Math.max(pad * 2 + textBlockHeight, thumbSize + pad * 2);
 
@@ -569,6 +656,10 @@
     ty += headerLineHeight;
 
     ctx.font = `${bodyFontSize}px sans-serif`;
+    ctx.fillStyle = '#9fd6ff';
+    ctx.fillText(plusCode, tx, ty);
+    ty += lineHeight;
+
     ctx.fillStyle = '#e2e2e2';
     for (const l of detailLines) { ctx.fillText(l, tx, ty); ty += lineHeight; }
 
@@ -593,9 +684,13 @@
       const { latitude: lat, longitude: lon, accuracy } = coords;
 
       statusText.textContent = 'Looking up address & building map…';
-      const w = video.videoWidth;
-      const h = video.videoHeight;
+      const nativeW = video.videoWidth;
+      const nativeH = video.videoHeight;
+      const crop = computeCropRect(nativeW, nativeH, RATIOS[ratioIndex].ratio);
+      const w = crop.w;
+      const h = crop.h;
       const thumbSize = Math.round(w * 0.17);
+      const plusCode = toPlusCode(lat, lon); // computed instantly, offline — no network wait
 
       const [address, mapThumb, nearby] = await Promise.all([
         reverseGeocode(lat, lon),
@@ -603,15 +698,15 @@
         withTimeout(findNearbyPlace(lat, lon), 6000).catch(() => null)
       ]);
 
-      // draw the video frame
+      // draw the video frame, cropped to the chosen aspect ratio
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0, w, h);
+      ctx.drawImage(video, crop.x, crop.y, crop.w, crop.h, 0, 0, w, h);
 
       const timestamp = formatTimestamp(new Date());
       drawOverlay(ctx, w, h, {
-        header: address.header, detail: address.detail, flag: address.flag, nearby,
+        header: address.header, detail: address.detail, flag: address.flag, plusCode, nearby,
         lat, lon, accuracy, timestamp, mapThumb, thumbSize
       });
 

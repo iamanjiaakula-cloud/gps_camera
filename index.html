@@ -94,15 +94,23 @@
   #resultImageWrap {
     flex: 1 1 auto; min-height: 0;
     display:flex; align-items:center; justify-content:center;
-    background:#000; overflow:hidden;
+    background:#000; overflow:hidden; position: relative;
   }
   #resultImage { max-width:100%; max-height:100%; object-fit:contain; display:block; }
+  #geotagLoading {
+    position:absolute; left:50%; bottom:14px; transform:translateX(-50%);
+    background:rgba(0,0,0,0.7); color:#fff; padding:8px 16px; border-radius:20px;
+    font-size:13px; white-space:nowrap; animation: pulse 1.4s ease-in-out infinite;
+  }
+  #geotagLoading.hidden { display:none; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
   #mapPreview { flex: 0 0 100px; width:100%; height:100px; background:#222; }
   #resultControls {
     flex: 0 0 auto;
     display:flex; gap:16px; justify-content:center;
     padding: 12px 16px max(12px, env(safe-area-inset-bottom));
   }
+  #downloadBtn.disabled { opacity: 0.5; pointer-events: none; }
 
   #statusText { flex: 1; text-align: center; }
   .hidden { display:none !important; }
@@ -128,7 +136,10 @@
   </div>
 
   <div id="resultView">
-    <div id="resultImageWrap"><img id="resultImage" alt="Captured geo-tagged photo" /></div>
+    <div id="resultImageWrap">
+      <img id="resultImage" alt="Captured geo-tagged photo" />
+      <div id="geotagLoading" class="hidden">📍 Adding location details…</div>
+    </div>
     <div id="mapPreview"></div>
     <div id="resultControls">
       <button id="retakeBtn">Retake</button>
@@ -153,6 +164,25 @@
   const retakeBtn = document.getElementById('retakeBtn');
   const downloadBtn = document.getElementById('downloadBtn');
   const mapPreviewEl = document.getElementById('mapPreview');
+  const geotagLoadingEl = document.getElementById('geotagLoading');
+
+  // Tracks location continuously in the background (rather than requesting a
+  // fresh GPS fix only at the moment of capture) so a recent fix is usually
+  // already on hand the instant the shutter is tapped — this is most of what
+  // makes capture feel instant instead of waiting several seconds every time.
+  let watchId = null;
+  let lastCoords = null;
+  let lastCoordsAt = 0;
+  let captureGeneration = 0; // bumped on retake, so a late-arriving geotag can't overwrite a newer photo
+
+  function startLocationWatch() {
+    if (!navigator.geolocation || watchId !== null) return;
+    watchId = navigator.geolocation.watchPosition(
+      pos => { lastCoords = pos.coords; lastCoordsAt = Date.now(); },
+      () => { /* ignore — capture flow falls back to an on-demand fix if needed */ },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
+    );
+  }
 
   // Aspect-ratio options, expressed as portrait width:height (since that's how
   // the phone is normally held) — "Full" uses whatever the camera sensor
@@ -673,61 +703,99 @@
   }
 
   // ---------- Capture flow ----------
+  // The shutter snaps the frame immediately (like a real camera) and shows it
+  // right away. The GPS/address/map lookups — the actual slow part, since
+  // they depend on the network — happen afterward in the background, and the
+  // overlay is baked in and the photo updated once they're ready. The
+  // download button stays visibly "Preparing…" until that overlay is on the
+  // photo, so nothing gets saved without its geotag by accident.
   captureBtn.addEventListener('click', async () => {
     captureBtn.disabled = true;
+    const myCapture = ++captureGeneration;
     try {
       if (video.videoWidth === 0 || video.videoHeight === 0) {
         await waitForVideoReady(); // extra safety net even if this somehow fired before the button was enabled
       }
-      statusText.textContent = 'Getting your location…';
-      const coords = await getLocation();
-      const { latitude: lat, longitude: lon, accuracy } = coords;
 
-      statusText.textContent = 'Looking up address & building map…';
+      // Snap immediately — this is the actual "shutter" moment.
       const nativeW = video.videoWidth;
       const nativeH = video.videoHeight;
       const crop = computeCropRect(nativeW, nativeH, RATIOS[ratioIndex].ratio);
-      const w = crop.w;
-      const h = crop.h;
-      const thumbSize = Math.round(w * 0.17);
-      const plusCode = toPlusCode(lat, lon); // computed instantly, offline — no network wait
-
-      const [address, mapThumb, nearby] = await Promise.all([
-        reverseGeocode(lat, lon),
-        buildMapThumbnail(lat, lon, thumbSize), // always resolves — real tiles, or a stylized fallback with a pin
-        withTimeout(findNearbyPlace(lat, lon), 6000).catch(() => null)
-      ]);
-
-      // draw the video frame, cropped to the chosen aspect ratio
+      const w = crop.w, h = crop.h;
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, crop.x, crop.y, crop.w, crop.h, 0, 0, w, h);
+      const captureMoment = new Date();
 
-      const timestamp = formatTimestamp(new Date());
+      // Show the plain photo right away so it feels instant.
+      const bareDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+      resultImage.src = bareDataUrl;
+      setDownloadReady(false);
+      geotagLoadingEl.classList.remove('hidden');
+      resultView.classList.add('active');
+      stopCamera();
+      captureBtn.disabled = false; // free to retake immediately even while geotagging runs
+
+      // Use an already-tracked position if we have a recent one — usually
+      // instant. Only fall back to requesting a brand-new GPS fix (the slow
+      // part) if background tracking hasn't reported anything yet.
+      let coords;
+      if (lastCoords && Date.now() - lastCoordsAt < 20000) {
+        coords = lastCoords;
+      } else {
+        coords = await getLocation();
+      }
+      if (myCapture !== captureGeneration) return; // superseded by a retake
+
+      const { latitude: lat, longitude: lon, accuracy } = coords;
+      const thumbSize = Math.round(w * 0.17);
+      const plusCode = toPlusCode(lat, lon); // instant, offline
+
+      const [address, mapThumb, nearby] = await Promise.all([
+        reverseGeocode(lat, lon),
+        buildMapThumbnail(lat, lon, thumbSize), // always resolves — real tiles, or a stylized fallback with a pin
+        withTimeout(findNearbyPlace(lat, lon), 5000).catch(() => null)
+      ]);
+      if (myCapture !== captureGeneration) return; // superseded by a retake
+
+      const timestamp = formatTimestamp(captureMoment);
       drawOverlay(ctx, w, h, {
         header: address.header, detail: address.detail, flag: address.flag, plusCode, nearby,
         lat, lon, accuracy, timestamp, mapThumb, thumbSize
       });
 
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-      resultImage.src = dataUrl;
-      downloadBtn.href = dataUrl;
-      downloadBtn.download = `geo_photo_${Date.now()}.jpg`;
-
-      showResult(lat, lon);
+      const finalDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+      resultImage.src = finalDataUrl;
+      setDownloadReady(true, finalDataUrl);
+      geotagLoadingEl.classList.add('hidden');
+      updateLiveMapPreview(lat, lon);
     } catch (err) {
-      statusText.textContent = 'Could not capture: ' + (err.message || err);
+      if (myCapture === captureGeneration) {
+        geotagLoadingEl.classList.add('hidden');
+        statusText.textContent = 'Could not add geotag: ' + (err.message || err);
+      }
     } finally {
       captureBtn.disabled = false;
     }
   });
 
-  function showResult(lat, lon) {
-    resultView.classList.add('active');
-    stopCamera();
+  function setDownloadReady(ready, href) {
+    if (ready) {
+      downloadBtn.href = href;
+      downloadBtn.download = `geo_photo_${Date.now()}.jpg`;
+      downloadBtn.classList.remove('disabled');
+      downloadBtn.textContent = 'Download';
+    } else {
+      downloadBtn.removeAttribute('href');
+      downloadBtn.classList.add('disabled');
+      downloadBtn.textContent = 'Preparing…';
+    }
+  }
 
-    // live map preview (for on-screen reference only — not baked into the saved image)
+  // Live map preview shown alongside the result (for on-screen reference only
+  // — not baked into the saved image).
+  function updateLiveMapPreview(lat, lon) {
     setTimeout(() => {
       if (!leafletMap) {
         leafletMap = L.map(mapPreviewEl).setView([lat, lon], 16);
@@ -745,14 +813,17 @@
   }
 
   retakeBtn.addEventListener('click', () => {
+    captureGeneration++; // invalidate any geotag fetch still in flight for the previous photo
     resultView.classList.remove('active');
+    geotagLoadingEl.classList.add('hidden');
     statusText.textContent = 'Starting camera…';
     startCamera();
   });
 
   // ---------- Init ----------
   startCamera();
+  startLocationWatch();
 })();
 </script>
 </body>
-  </html>
+</html>

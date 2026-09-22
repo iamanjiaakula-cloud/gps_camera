@@ -214,6 +214,48 @@
     return { x: Math.round((w - cw) / 2), y: Math.round((h - ch) / 2), w: cw, h: ch };
   }
 
+  function getOrientationAngle() {
+    if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
+    if (typeof window.orientation === 'number') return ((window.orientation % 360) + 360) % 360; // older iOS
+    return 0;
+  }
+
+  // Draws the current video frame onto a new canvas, rotated so the subject
+  // comes out upright regardless of whether the phone was held in portrait or
+  // landscape. Many mobile browsers keep the raw camera buffer in a single
+  // fixed orientation and only rotate the on-screen <video> element via CSS
+  // for display — capturing straight from that buffer (as canvas drawImage
+  // does) skips that rotation entirely, which is what produces a sideways
+  // photo when the phone is turned to take a landscape shot. This corrects
+  // for that using the device's current screen-orientation angle.
+  function captureUprightFrame(video) {
+    const rawW = video.videoWidth;
+    const rawH = video.videoHeight;
+    const angle = getOrientationAngle(); // expected: 0, 90, 180, or 270
+    const swapped = angle === 90 || angle === 270;
+    const outW = swapped ? rawH : rawW;
+    const outH = swapped ? rawW : rawH;
+
+    const c = document.createElement('canvas');
+    c.width = outW;
+    c.height = outH;
+    const cx = c.getContext('2d');
+    cx.save();
+    if (angle === 90) {
+      cx.translate(outW, 0);
+      cx.rotate(Math.PI / 2);
+    } else if (angle === 180) {
+      cx.translate(outW, outH);
+      cx.rotate(Math.PI);
+    } else if (angle === 270) {
+      cx.translate(0, outH);
+      cx.rotate(-Math.PI / 2);
+    }
+    cx.drawImage(video, 0, 0, rawW, rawH);
+    cx.restore();
+    return c;
+  }
+
   // Some mobile browsers (older MIUI/Xiaomi WebViews included) don't support the
   // "dvh" unit reliably, and 100vh alone often includes space hidden behind the
   // address bar. Measuring the real visible height in JS and feeding it into a
@@ -717,15 +759,15 @@
         await waitForVideoReady(); // extra safety net even if this somehow fired before the button was enabled
       }
 
-      // Snap immediately — this is the actual "shutter" moment.
-      const nativeW = video.videoWidth;
-      const nativeH = video.videoHeight;
-      const crop = computeCropRect(nativeW, nativeH, RATIOS[ratioIndex].ratio);
+      // Snap immediately — this is the actual "shutter" moment. Corrects for
+      // the phone being held in landscape before anything else touches the frame.
+      const uprightFrame = captureUprightFrame(video);
+      const crop = computeCropRect(uprightFrame.width, uprightFrame.height, RATIOS[ratioIndex].ratio);
       const w = crop.w, h = crop.h;
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, crop.x, crop.y, crop.w, crop.h, 0, 0, w, h);
+      ctx.drawImage(uprightFrame, crop.x, crop.y, crop.w, crop.h, 0, 0, w, h);
       const captureMoment = new Date();
 
       // Show the plain photo right away so it feels instant.

@@ -60,15 +60,14 @@
     let currentStream = null;
     let useFrontCamera = false;
     
-    // Core structural geographic dataset parameters configured precisely to your formatting rules
     let geoData = {
         line1: "Karimnagar, Telangana, India",
         line2: "WPG1+EERU7, H.No 4-2-12, Sai Nagar, Street No. 3, Near Multiplex Area",
         line3: "",
-        rawCoords: "Lat: 18.4386° N, Lon: 79.1288° E" // Live dynamic fallback tracker
+        rawCoords: "Lat: 18.4386° N, Lon: 79.1288° E"
     };
 
-    // 1. Live Real-Time Date & Clock Engine (Native IST Sync)
+    // 1. Live Time Engine
     function updateDateTime() {
         const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
         const now = new Date();
@@ -78,17 +77,14 @@
         const mm = String(now.getMonth() + 1).padStart(2, '0');
         const yyyy = now.getFullYear();
         
-        // Exact 24-Hour local Indian Standard Time computation
         const timeStr = now.toLocaleTimeString('en-IN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
         
         geoData.line3 = `${dayName}, ${dd}${mm}${yyyy}, ${timeStr}, IST`;
-        
-        // Refresh live viewport panel
         previewText.innerHTML = `${geoData.line1}<br>${geoData.line2}<br><span style="color:#ffeb3b;">${geoData.line3}</span><br><span style="font-size:9px; color:#aaa;">${geoData.rawCoords}</span>`;
     }
     setInterval(updateDateTime, 1000);
 
-    // 2. High-Accuracy Hardware Geolocation Sync
+    // 2. High-Accuracy GPS
     function initHardwareGPS() {
         if (!navigator.geolocation) {
             gpsStatus.innerText = "GPS Not Supported";
@@ -96,95 +92,102 @@
             return;
         }
 
-        const geoOptions = {
-            enableHighAccuracy: true,
-            timeout: 8000,
-            maximumAge: 0
-        };
-
-        // Real-time hardware tracking loop
         navigator.geolocation.watchPosition(
             (position) => {
                 const lat = position.coords.latitude.toFixed(4);
                 const lon = position.coords.longitude.toFixed(4);
                 const acc = position.coords.accuracy.toFixed(0);
-                
                 gpsStatus.innerText = `GPS: Locked (±${acc}m)`;
                 gpsStatus.style.color = "#4CAF50";
-                
-                // Inject exact hardware positioning strings inside the live template block
                 geoData.rawCoords = `GPS Fixed: ${lat}° N, ${lon}° E | Acc: ${acc} meters`;
             },
             (error) => {
                 gpsStatus.innerText = "GPS Fixed (Approx)";
                 gpsStatus.style.color = "#ff9800";
             }, 
-            geoOptions
+            { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
         );
     }
 
-    // 3. High Performance Low-Latency Video Pipeline
+    // 3. Robust High-Performance Camera Stream Switcher
     async function startCameraStream() {
+        // CRUCIAL: Release the hardware stack cleanly to prevent black screens
         if (currentStream) {
-            currentStream.getTracks().forEach(track => track.stop());
+            currentStream.getTracks().forEach(track => {
+                track.stop();
+            });
+            currentStream = null;
         }
+        
+        // Disconnect video element pointers entirely before re-initialization
+        video.srcObject = null;
 
         const constraints = {
             video: {
                 facingMode: useFrontCamera ? "user" : "environment",
-                width: { ideal: 1920 },
-                height: { ideal: 1080 }
+                width: { ideal: 1280 }, // Adjusted resolution bounds for faster stream initialization
+                height: { ideal: 720 }
             },
             audio: false
         };
 
         try {
-            currentStream = await navigator.mediaDevices.getUserMedia(constraints);
-            video.srcObject = currentStream;
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            currentStream = stream;
+            video.srcObject = stream;
+            
+            // Forces mobile hardware drivers to immediately execute canvas sizing loops
+            video.onloadedmetadata = () => {
+                video.play().catch(e => console.log("Playback interrupted"));
+            };
         } catch (err) {
-            alert("Camera Initialization Failed: Please ensure browser permissions are allowed.");
+            console.error("Camera error, trying lower boundary fallback...", err);
+            // Fallback rules if modern mobile constraints hit firmware exceptions
+            try {
+                const fallbackStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: useFrontCamera ? "user" : "environment" } 
+                });
+                currentStream = fallbackStream;
+                video.srcObject = fallbackStream;
+            } catch (fallbackErr) {
+                alert("Camera Initialization Failed. Check system browser permissions.");
+            }
         }
     }
 
-    flipBtn.addEventListener('click', () => {
+    flipBtn.addEventListener('click', async () => {
         useFrontCamera = !useFrontCamera;
-        startCameraStream();
+        await startCameraStream();
     });
 
-    // 4. Zero-Delay Hardware Image Shutter & Canvas Compositor
+    // 4. Shutter & Canvas Compositor
     snapBtn.addEventListener('click', () => {
         if (!video.videoWidth) return;
 
-        // Freeze and frame setup
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         const ctx = canvas.getContext('2d');
         
-        // Mirror calculation layer for front facing shots
         if (useFrontCamera) {
             ctx.translate(canvas.width, 0);
             ctx.scale(-1, 1);
         }
         
-        // Draw picture snapshot instantly to layout space
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         
         if (useFrontCamera) {
             ctx.setTransform(1, 0, 0, 1, 0, 0);
         }
 
-        // Draw Semitransparent Geotag Info Bar
         const barHeight = canvas.height * 0.16; 
         const yPosition = canvas.height - barHeight;
         
         ctx.fillStyle = "rgba(0, 0, 0, 0.60)";
         ctx.fillRect(0, yPosition, canvas.width, barHeight);
         
-        // Dynamic Green/Orange side boundary separator accent
         ctx.fillStyle = "#ff9800";
         ctx.fillRect(0, yPosition, Math.max(8, canvas.width * 0.008), barHeight);
 
-        // Text typography layout scaling rules
         const baseFontSize = Math.max(16, Math.floor(canvas.width * 0.026));
         ctx.textBaseline = "top";
         
@@ -192,27 +195,24 @@
         let currentTextTop = yPosition + (barHeight * 0.15);
         const lineJump = baseFontSize * 1.35;
 
-        // Line 1 Stamp: Region Location Title
         ctx.font = `bold ${baseFontSize}px monospace`;
         ctx.fillStyle = "#ffffff";
         ctx.fillText(geoData.line1.toUpperCase(), textPaddingLeft, currentTextTop);
         currentTextTop += lineJump;
         
-        // Line 2 Stamp: Plus Code, House number, street & landmarks
         ctx.font = `${baseFontSize - 2}px monospace`;
         ctx.fillStyle = "#e0e0e0";
         ctx.fillText(geoData.line2, textPaddingLeft, currentTextTop);
         currentTextTop += lineJump;
         
-        // Line 3 Stamp: Day, Date, Time, and timezone details
         ctx.font = `bold ${baseFontSize - 1}px monospace`;
         ctx.fillStyle = "#ffeb3b"; 
         ctx.fillText(geoData.line3, textPaddingLeft, currentTextTop);
         currentTextTop += lineJump * 0.9;
 
-        // Optional Line 4: Live Hardware Coordination Check stamp
         ctx.font = `${baseFontSize - 6}px monospace`;
         ctx.fillStyle = "#888888";
         ctx.fillText(geoData.rawCoords, textPaddingLeft, currentTextTop);
 
-        // Immediate Native File Download Download Execution
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+        const downloadLink = document.getElementById('download-link');
